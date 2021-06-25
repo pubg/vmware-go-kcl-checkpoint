@@ -39,7 +39,7 @@ var (
 	}
 	config = logger.Configuration{
 		EnableConsole: true,
-		ConsoleLevel:  logger.Info,
+		ConsoleLevel:  logger.Warn,
 	}
 )
 
@@ -53,7 +53,7 @@ func init() {
 
 	config = logger.Configuration{
 		EnableConsole: true,
-		ConsoleLevel:  logger.Info,
+		ConsoleLevel:  logger.Warn,
 	}
 
 	profiles = Profiles{
@@ -144,6 +144,10 @@ func TestRedis(t *testing.T) {
 	<-time.After(10 * time.Second)
 
 	go publishData(t)
+
+	<-time.After(10 * time.Second)
+
+	sigs <- syscall.SIGINT
 
 	<-ctx.Done()
 

@@ -186,7 +186,7 @@ func publishAggregateRecord(t *testing.T, kc kinesisiface.KinesisAPI) {
 	if err != nil {
 		t.Errorf("Error in PutRecord. %+v", err)
 	} else {
-		t.Errorf("generateAggregateRecord %d", 5)
+		t.Logf("generateAggregateRecord %d", 5)
 	}
 }
 
