@@ -12,7 +12,7 @@ import (
 )
 
 // new redis checkpointer
-checkpointer := redis.NewRedisCheckpoint(kclConfig, &redis.RedisCheckpointOptions{})
+checkpointer := redis.NewRedisCheckpoint(kclConfig, &redis.RedisCheckpointOptions{redisEndpoint: "localhost:6379"})
 
 // set to worker
 worker.WithCheckpointer(checkpointer)
