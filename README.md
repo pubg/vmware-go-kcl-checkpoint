@@ -8,7 +8,7 @@ Custom Checkpoints for vmware-go-kcl
 ## How to use
 ```go
 import (
-    redis "github.com/bitofsky/vmware-go-kcl-checkpoint/redis"
+    redis "github.com/pubg/vmware-go-kcl-checkpoint/redis"
 )
 
 // new redis checkpointer

@@ -18,7 +18,7 @@ import (
 	wk "github.com/vmware/vmware-go-kcl/clientlibrary/worker"
 	logger "github.com/vmware/vmware-go-kcl/logger"
 
-	redis "github.com/bitofsky/vmware-go-kcl-checkpoint/redis"
+	redis "github.com/pubg/vmware-go-kcl-checkpoint/redis"
 )
 
 const ()

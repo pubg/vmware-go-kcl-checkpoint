@@ -1,4 +1,4 @@
-module github.com/bitofsky/vmware-go-kcl-checkpoint
+module github.com/pubg/vmware-go-kcl-checkpoint
 
 go 1.16
 
