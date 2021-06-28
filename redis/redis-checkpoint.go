@@ -21,7 +21,7 @@ func (e ErrLeaseNotAcquired) Error() string {
 	return fmt.Sprintf("lease not acquired: %s", e.cause)
 }
 
-// RedisCheckpoint implements the Checkpoint interface using DynamoDB as a backend
+// RedisCheckpoint implements the Checkpoint interface using Redis as a backend
 type RedisCheckpoint struct {
 	prefix        string
 	redisEndpoint string
@@ -69,7 +69,7 @@ func NewRedisCheckpoint(kclConfig *cfg.KinesisClientLibConfiguration, options *R
 	return checkpointer
 }
 
-// WithDynamoDB is used to provide DynamoDB service
+// WithRedis is used to provide Redis service
 func (checkpointer *RedisCheckpoint) WithRedis(svc *goredis.Client) *RedisCheckpoint {
 	checkpointer.svc = svc
 	return checkpointer
