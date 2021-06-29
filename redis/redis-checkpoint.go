@@ -310,12 +310,18 @@ func (checkpointer *RedisCheckpoint) syncLeases(shardStatus map[string]*par.Shar
 	iter := checkpointer.svc.Scan(cursor, checkpointer.prefix+"*", 1).Iterator()
 
 	for iter.Next() {
-		j := iter.Val()
+		key := iter.Val()
+		j, err := checkpointer.svc.Get(key).Result()
+
+		if err != nil { // just logging
+			log.Errorf("syncLeases Get Error: %s, %s", err.Error(), key)
+			continue
+		}
 
 		cp, err := jsonToCheckpoint(j)
 
 		if err != nil { // just logging
-			log.Errorf("syncLeases jsonToCheckpoint Error: %s", err.Error())
+			log.Errorf("syncLeases jsonToCheckpoint Error: %s, %s", err.Error(), j)
 			continue
 		}
 
