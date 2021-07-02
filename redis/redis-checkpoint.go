@@ -1,12 +1,15 @@
 package redis
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
-	goredis "github.com/go-redis/redis"
+	goredis "github.com/go-redis/redis/v8"
+	"github.com/go-redsync/redsync/v4"
+	rsGoredis "github.com/go-redsync/redsync/v4/redis/goredis/v8"
 
 	chk "github.com/vmware/vmware-go-kcl/clientlibrary/checkpoint"
 	cfg "github.com/vmware/vmware-go-kcl/clientlibrary/config"
@@ -15,10 +18,6 @@ import (
 
 type ErrLeaseNotAcquired struct {
 	cause string
-}
-
-func (e ErrLeaseNotAcquired) Error() string {
-	return fmt.Sprintf("lease not acquired: %s", e.cause)
 }
 
 // RedisCheckpoint implements the Checkpoint interface using Redis as a backend
@@ -30,6 +29,8 @@ type RedisCheckpoint struct {
 	svc           *goredis.Client
 	kclConfig     *cfg.KinesisClientLibConfiguration
 	lastLeaseSync time.Time
+	rs            *redsync.Redsync
+	mutex         *redsync.Mutex
 }
 
 type RedisCheckpointOptions struct {
@@ -44,6 +45,14 @@ type ShardCheckpoint struct {
 	Checkpoint    string
 	ParentShardId string
 	ClaimRequest  string
+}
+
+var (
+	ctx = context.Background()
+)
+
+func (e ErrLeaseNotAcquired) Error() string {
+	return fmt.Sprintf("lease not acquired: %s", e.cause)
 }
 
 func NewRedisCheckpoint(kclConfig *cfg.KinesisClientLibConfiguration, options *RedisCheckpointOptions) *RedisCheckpoint {
@@ -77,10 +86,11 @@ func (checkpointer *RedisCheckpoint) WithRedis(svc *goredis.Client) *RedisCheckp
 
 // Init initialises the Redis Checkpoint
 func (checkpointer *RedisCheckpoint) Init() error {
+
 	checkpointer.kclConfig.Logger.Debugf("Creating Redis session")
 
 	if checkpointer.svc == nil {
-		s, err := NewRedisClient(checkpointer.redisEndpoint)
+		s, err := NewRedisClient(ctx, checkpointer.redisEndpoint)
 
 		if err != nil {
 			checkpointer.kclConfig.Logger.Errorf("Redis Init Error - %s", err)
@@ -89,11 +99,20 @@ func (checkpointer *RedisCheckpoint) Init() error {
 		checkpointer.svc = s
 	}
 
+	pool := rsGoredis.NewPool(checkpointer.svc)
+	checkpointer.rs = redsync.New(pool)
+
 	return nil
 }
 
 // GetLease attempts to gain a lock on the given shard
 func (checkpointer *RedisCheckpoint) GetLease(shard *par.ShardStatus, newAssignTo string) error {
+
+	if mutex, err := checkpointer.lock(shard.ID); err != nil {
+		return err
+	} else {
+		defer checkpointer.unlock(shard.ID, mutex)
+	}
 
 	isClaimRequestExpired := shard.IsClaimRequestExpired(checkpointer.kclConfig)
 
@@ -160,6 +179,13 @@ func (checkpointer *RedisCheckpoint) GetLease(shard *par.ShardStatus, newAssignT
 
 // CheckpointSequence writes a checkpoint at the designated sequence ID
 func (checkpointer *RedisCheckpoint) CheckpointSequence(shard *par.ShardStatus) error {
+
+	if mutex, err := checkpointer.lock(shard.ID); err != nil {
+		return err
+	} else {
+		defer checkpointer.unlock(shard.ID, mutex)
+	}
+
 	leaseTimeout := shard.GetLeaseTimeout().UTC().Format(time.RFC3339)
 	newCheckpoint := &ShardCheckpoint{
 		ShardID:      shard.ID,
@@ -177,6 +203,13 @@ func (checkpointer *RedisCheckpoint) CheckpointSequence(shard *par.ShardStatus) 
 
 // FetchCheckpoint retrieves the checkpoint for the given shard
 func (checkpointer *RedisCheckpoint) FetchCheckpoint(shard *par.ShardStatus) error {
+
+	if mutex, err := checkpointer.lock(shard.ID); err != nil {
+		return err
+	} else {
+		defer checkpointer.unlock(shard.ID, mutex)
+	}
+
 	checkpoint, err := checkpointer.getItem(shard.ID)
 	if err != nil {
 		return err
@@ -206,6 +239,13 @@ func (checkpointer *RedisCheckpoint) FetchCheckpoint(shard *par.ShardStatus) err
 
 // RemoveLeaseInfo to remove lease info for shard entry in dynamoDB because the shard no longer exists in Kinesis
 func (checkpointer *RedisCheckpoint) RemoveLeaseInfo(shardID string) error {
+
+	if mutex, err := checkpointer.lock(shardID); err != nil {
+		return err
+	} else {
+		defer checkpointer.unlock(shardID, mutex)
+	}
+
 	err := checkpointer.removeItem(shardID)
 
 	if err != nil {
@@ -219,6 +259,13 @@ func (checkpointer *RedisCheckpoint) RemoveLeaseInfo(shardID string) error {
 
 // RemoveLeaseOwner to remove lease owner for the shard entry
 func (checkpointer *RedisCheckpoint) RemoveLeaseOwner(shardID string) error {
+
+	if mutex, err := checkpointer.lock(shardID); err != nil {
+		return err
+	} else {
+		defer checkpointer.unlock(shardID, mutex)
+	}
+
 	if cp, err := checkpointer.getItem(shardID); err != nil {
 		return err
 	} else if cp.AssignedTo != checkpointer.kclConfig.WorkerID {
@@ -259,6 +306,12 @@ func (checkpointer *RedisCheckpoint) ClaimShard(shard *par.ShardStatus, claimID 
 
 	if err := checkpointer.FetchCheckpoint(shard); err != nil && err != chk.ErrSequenceIDNotFound {
 		return err
+	}
+
+	if mutex, err := checkpointer.lock(shard.ID); err != nil {
+		return err
+	} else {
+		defer checkpointer.unlock(shard.ID, mutex)
 	}
 
 	leaseTimeoutString := shard.GetLeaseTimeout().Format(time.RFC3339)
@@ -307,11 +360,11 @@ func (checkpointer *RedisCheckpoint) syncLeases(shardStatus map[string]*par.Shar
 	checkpointer.lastLeaseSync = time.Now()
 	var cursor uint64
 
-	iter := checkpointer.svc.Scan(cursor, checkpointer.prefix+"*", 1).Iterator()
+	iter := checkpointer.svc.Scan(ctx, cursor, checkpointer.prefix+"*", 1).Iterator()
 
-	for iter.Next() {
+	for iter.Next(ctx) {
 		key := iter.Val()
-		j, err := checkpointer.svc.Get(key).Result()
+		j, err := checkpointer.svc.Get(ctx, key).Result()
 
 		if err != nil { // just logging
 			log.Errorf("syncLeases Get Error: %s, %s", err.Error(), key)
@@ -348,7 +401,7 @@ func (checkpointer *RedisCheckpoint) putItem(newCheckpoint *ShardCheckpoint) err
 	var _ string
 
 	if j, err = json.Marshal(newCheckpoint); err == nil {
-		if err = checkpointer.svc.Set(checkpointer.prefix+newCheckpoint.ShardID, string(j), 0).Err(); err == nil {
+		if err = checkpointer.svc.Set(ctx, checkpointer.prefix+newCheckpoint.ShardID, string(j), 0).Err(); err == nil {
 			checkpointer.kclConfig.Logger.Infof("putItem : %s", j)
 			return nil
 		}
@@ -366,8 +419,8 @@ func jsonToCheckpoint(j string) (*ShardCheckpoint, error) {
 }
 
 func (checkpointer *RedisCheckpoint) getItem(shardID string) (*ShardCheckpoint, error) {
-	if r, err := checkpointer.svc.Get(checkpointer.prefix + shardID).Result(); err != nil {
-		if err == goredis.Nil {
+	if r, err := checkpointer.svc.Get(ctx, checkpointer.prefix+shardID).Result(); err != nil {
+		if err == Nil {
 			return &ShardCheckpoint{ShardID: shardID}, nil
 		} else {
 			return nil, err
@@ -379,11 +432,34 @@ func (checkpointer *RedisCheckpoint) getItem(shardID string) (*ShardCheckpoint, 
 }
 
 func (checkpointer *RedisCheckpoint) removeItem(shardID string) error {
-	err := checkpointer.svc.Del(checkpointer.prefix + shardID).Err()
+	err := checkpointer.svc.Del(ctx, checkpointer.prefix+shardID).Err()
 
 	if err != nil {
 		checkpointer.kclConfig.Logger.Infof("removeItem : %s", shardID)
 	}
 
 	return err
+}
+
+func (checkpointer *RedisCheckpoint) lock(shardID string) (*redsync.Mutex, error) {
+	mutexname := checkpointer.prefix + ":locks:" + shardID
+	mutex := checkpointer.rs.NewMutex(mutexname)
+
+	if err := mutex.Lock(); err != nil {
+		checkpointer.kclConfig.Logger.Errorf("lock error shardID=%s, err=%s", shardID, err)
+		return nil, err
+	} else {
+		checkpointer.kclConfig.Logger.Infof("locked shardID=%s", shardID)
+		return mutex, nil
+	}
+}
+
+func (checkpointer *RedisCheckpoint) unlock(shardID string, mutex *redsync.Mutex) (bool, error) {
+	if ok, err := mutex.Unlock(); !ok || err != nil {
+		checkpointer.kclConfig.Logger.Errorf("unlock error shardID=%s, ok=%v, err=%s", shardID, ok, err)
+		return ok, err
+	} else {
+		checkpointer.kclConfig.Logger.Infof("unlocked shardID=%s, ok=%v", shardID, ok)
+		return ok, err
+	}
 }
