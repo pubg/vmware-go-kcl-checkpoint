@@ -182,13 +182,21 @@ func (checkpointer *RedisCheckpoint) CheckpointSequence(shard *par.ShardStatus) 
 		defer checkpointer.unlock(shard.ID, mutex)
 	}
 
+	claimRequest := ""
+
+	if checkpointer.kclConfig.EnableLeaseStealing {
+		if checkpoint, err := checkpointer.getItem(shard.ID); err != nil && checkpoint.Checkpoint != "" {
+			claimRequest = checkpoint.Checkpoint
+		}
+	}
+
 	leaseTimeout := shard.GetLeaseTimeout().UTC().Format(time.RFC3339)
 	newCheckpoint := &ShardCheckpoint{
 		ShardID:      shard.ID,
 		Checkpoint:   shard.GetCheckpoint(),
 		AssignedTo:   shard.GetLeaseOwner(),
 		LeaseTimeout: leaseTimeout,
-		ClaimRequest: shard.ClaimRequest,
+		ClaimRequest: claimRequest,
 	}
 
 	if len(shard.ParentShardId) > 0 {
