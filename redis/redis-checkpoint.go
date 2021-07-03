@@ -185,8 +185,9 @@ func (checkpointer *RedisCheckpoint) CheckpointSequence(shard *par.ShardStatus) 
 	claimRequest := ""
 
 	if checkpointer.kclConfig.EnableLeaseStealing {
-		if checkpoint, err := checkpointer.getItem(shard.ID); err != nil && checkpoint.Checkpoint != "" {
-			claimRequest = checkpoint.Checkpoint
+		if checkpoint, err := checkpointer.getItem(shard.ID); err != nil && checkpoint.ClaimRequest != "" && checkpoint.ClaimRequest != shard.ID {
+			claimRequest = checkpoint.ClaimRequest
+			checkpointer.kclConfig.Logger.Warnf("CheckpointSequence new claimRequest for %s", claimRequest)
 		}
 	}
 
@@ -274,7 +275,8 @@ func (checkpointer *RedisCheckpoint) RemoveLeaseOwner(shardID string) error {
 	} else if cp.AssignedTo != checkpointer.kclConfig.WorkerID {
 		return fmt.Errorf("RemoveLeaseOwner invalid AssignedTo")
 	} else {
-		return checkpointer.removeItem(shardID)
+		cp.AssignedTo = ""
+		return checkpointer.putItem(cp)
 	}
 }
 
