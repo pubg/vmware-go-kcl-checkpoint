@@ -363,12 +363,14 @@ func (checkpointer *RedisCheckpoint) syncLeases(shardStatus map[string]*par.Shar
 	}
 
 	checkpointer.lastLeaseSync = time.Now()
-	var cursor uint64
 
-	iter := checkpointer.svc.Scan(ctx, cursor, checkpointer.shardPrefix+"*", 1).Iterator()
+	keys, _, err := checkpointer.svc.Scan(ctx, 0, checkpointer.shardPrefix+"*", 0).Result()
 
-	for iter.Next(ctx) {
-		key := iter.Val()
+	if err != nil {
+		return fmt.Errorf("syncLeases Scan Error: %s", err)
+	}
+
+	for _, key := range keys {
 		j, err := checkpointer.svc.Get(ctx, key).Result()
 
 		if err != nil { // just logging
